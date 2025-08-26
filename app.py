@@ -5,6 +5,9 @@ from typing import Dict, List, Optional
 import copy
 from PIL import Image
 import io
+import csv
+import base64
+import pandas as pd
 
 @dataclass
 class Character:
@@ -41,18 +44,12 @@ class Character:
         
         # Step 2: Subtract from Guard
         scar_inflicted = False
+        original_guard = self.guard
         if damage > 0 and self.guard > 0:
-            original_guard = self.guard
             guard_damage = min(damage, self.guard)
             self.guard -= guard_damage
             damage -= guard_damage
             damage_log.append(f"Guard reduced by {guard_damage} (now {self.guard})")
-            
-            # Check for Scar (Guard reduced to exactly 0)
-            if original_guard > 0 and self.guard == 0:
-                self.is_scarred = True
-                scar_inflicted = True
-                damage_log.append("🔥 SCAR inflicted! (Guard reduced to 0)")
         
         # Step 3: Subtract remaining damage from Vigor
         vigor_damage = 0
@@ -81,6 +78,12 @@ class Character:
             if self.vigor <= 0:
                 self.is_alive = False
                 damage_log.append("💀 CHARACTER SLAIN!")
+        
+        # Check for Scar (Guard reduced to exactly 0 AND no Vigor damage)
+        if original_guard > 0 and self.guard == 0 and vigor_damage == 0:
+            self.is_scarred = True
+            scar_inflicted = True
+            damage_log.append("🔥 SCAR inflicted! (Guard reduced to 0 with no Vigor loss)")
         
         return {
             "original_damage": original_damage,
@@ -134,6 +137,93 @@ def delete_character(name: str):
     if 'characters' in st.session_state and name in st.session_state.characters:
         del st.session_state.characters[name]
 
+def export_characters_to_csv(characters: Dict[str, Character]) -> str:
+    """Export characters to CSV format."""
+    if not characters:
+        return ""
+    
+    # Create CSV data
+    csv_data = []
+    for name, character in characters.items():
+        row = {
+            'name': character.name,
+            'vigor': character.vigor,
+            'max_vigor': character.max_vigor,
+            'clarity': character.clarity,
+            'max_clarity': character.max_clarity,
+            'spirit': character.spirit,
+            'max_spirit': character.max_spirit,
+            'guard': character.guard,
+            'max_guard': character.max_guard,
+            'armor': character.armor,
+            'is_mortally_wounded': character.is_mortally_wounded,
+            'is_wounded': character.is_wounded,
+            'is_impaired': character.is_impaired,
+            'is_fatigued': character.is_fatigued,
+            'is_scarred': character.is_scarred,
+            'is_alive': character.is_alive,
+            'notes': character.notes,
+            'profile_image_base64': base64.b64encode(character.profile_image).decode() if character.profile_image else ""
+        }
+        csv_data.append(row)
+    
+    # Convert to CSV string
+    output = io.StringIO()
+    if csv_data:
+        fieldnames = csv_data[0].keys()
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(csv_data)
+    
+    return output.getvalue()
+
+def import_characters_from_csv(csv_content: str) -> Dict[str, Character]:
+    """Import characters from CSV content."""
+    characters = {}
+    
+    try:
+        # Parse CSV
+        csv_reader = csv.DictReader(io.StringIO(csv_content))
+        
+        for row in csv_reader:
+            # Handle image data
+            profile_image = None
+            if row.get('profile_image_base64') and row['profile_image_base64'].strip():
+                try:
+                    profile_image = base64.b64decode(row['profile_image_base64'])
+                except Exception:
+                    profile_image = None
+            
+            # Create character
+            character = Character(
+                name=row['name'],
+                vigor=int(row['vigor']),
+                max_vigor=int(row['max_vigor']),
+                clarity=int(row['clarity']),
+                max_clarity=int(row['max_clarity']),
+                spirit=int(row['spirit']),
+                max_spirit=int(row['max_spirit']),
+                guard=int(row['guard']),
+                max_guard=int(row['max_guard']),
+                armor=int(row['armor']),
+                is_mortally_wounded=row['is_mortally_wounded'].lower() == 'true',
+                is_wounded=row['is_wounded'].lower() == 'true',
+                is_impaired=row['is_impaired'].lower() == 'true',
+                is_fatigued=row['is_fatigued'].lower() == 'true',
+                is_scarred=row['is_scarred'].lower() == 'true',
+                is_alive=row['is_alive'].lower() == 'true',
+                notes=row.get('notes', ''),
+                profile_image=profile_image
+            )
+            
+            characters[character.name] = character
+    
+    except Exception as e:
+        st.error(f"Error importing CSV: {str(e)}")
+        return {}
+    
+    return characters
+
 
 def character_creation_page(characters):
     """Character creation page."""
@@ -144,13 +234,13 @@ def character_creation_page(characters):
         
         with col1:
             name = st.text_input("Character Name", placeholder="Enter character name")
-            vigor = st.number_input("Vigor", min_value=1, max_value=50, value=10)
-            clarity = st.number_input("Clarity", min_value=1, max_value=50, value=10)
-            spirit = st.number_input("Spirit", min_value=1, max_value=50, value=10)
+            vigor = st.number_input("VIG", min_value=1, max_value=50, value=10)
+            clarity = st.number_input("CLA", min_value=1, max_value=50, value=10)
+            spirit = st.number_input("SPI", min_value=1, max_value=50, value=10)
         
         with col2:
-            guard = st.number_input("Guard", min_value=0, max_value=50, value=5)
-            armor = st.number_input("Armor", min_value=0, max_value=20, value=1)
+            guard = st.number_input("GRD", min_value=0, max_value=50, value=5)
+            armor = st.number_input("ARM", min_value=0, max_value=20, value=1)
         
         # Notes field spanning both columns
         notes = st.text_area(
@@ -243,13 +333,13 @@ def character_management_page(characters):
             stats_col1, stats_col2 = st.columns(2)
             
             with stats_col1:
-                st.metric("Vigor", f"{character.vigor}/{character.max_vigor}")
-                st.metric("Clarity", f"{character.clarity}/{character.max_clarity}")
-                st.metric("Spirit", f"{character.spirit}/{character.max_spirit}")
+                st.metric("VIG", f"{character.vigor}/{character.max_vigor}")
+                st.metric("CLA", f"{character.clarity}/{character.max_clarity}")
+                st.metric("SPI", f"{character.spirit}/{character.max_spirit}")
             
             with stats_col2:
-                st.metric("Guard", f"{character.guard}/{character.max_guard}")
-                st.metric("Armor", character.armor)
+                st.metric("GRD", f"{character.guard}/{character.max_guard}")
+                st.metric("ARM", character.armor)
         
         with col2:
             st.subheader("Quick Actions")
@@ -264,8 +354,8 @@ def character_management_page(characters):
             # Manual stat adjustments
             st.markdown("**Manual Adjustments:**")
             
-            vigor_change = st.number_input("Vigor +/-", value=0, key=f"vigor_{selected_char_name}")
-            if st.button("Apply Vigor Change", key=f"apply_vigor_{selected_char_name}"):
+            vigor_change = st.number_input("VIG +/-", value=0, key=f"vigor_{selected_char_name}")
+            if st.button("Apply VIG Change", key=f"apply_vigor_{selected_char_name}"):
                 character.vigor = max(0, min(character.vigor + vigor_change, character.max_vigor))
                 if character.vigor <= 0:
                     character.is_alive = False
@@ -275,8 +365,8 @@ def character_management_page(characters):
                 save_character(character)
                 st.rerun()
             
-            guard_change = st.number_input("Guard +/-", value=0, key=f"guard_{selected_char_name}")
-            if st.button("Apply Guard Change", key=f"apply_guard_{selected_char_name}"):
+            guard_change = st.number_input("GRD +/-", value=0, key=f"guard_{selected_char_name}")
+            if st.button("Apply GRD Change", key=f"apply_guard_{selected_char_name}"):
                 character.guard = max(0, min(character.guard + guard_change, character.max_guard))
                 save_character(character)
                 st.rerun()
@@ -388,11 +478,11 @@ def character_management_page(characters):
             # Edit character
             with st.expander("✏️ Edit Character"):
                 with st.form(f"edit_{selected_char_name}"):
-                    new_max_vigor = st.number_input("Max Vigor", value=character.max_vigor, min_value=1)
-                    new_max_clarity = st.number_input("Max Clarity", value=character.max_clarity, min_value=1)
-                    new_max_spirit = st.number_input("Max Spirit", value=character.max_spirit, min_value=1)
-                    new_max_guard = st.number_input("Max Guard", value=character.max_guard, min_value=0)
-                    new_armor = st.number_input("Armor", value=character.armor, min_value=0)
+                    new_max_vigor = st.number_input("Max VIG", value=character.max_vigor, min_value=1)
+                    new_max_clarity = st.number_input("Max CLA", value=character.max_clarity, min_value=1)
+                    new_max_spirit = st.number_input("Max SPI", value=character.max_spirit, min_value=1)
+                    new_max_guard = st.number_input("Max GRD", value=character.max_guard, min_value=0)
+                    new_armor = st.number_input("ARM", value=character.armor, min_value=0)
                     
                     if st.form_submit_button("Update Character"):
                         character.max_vigor = new_max_vigor
@@ -461,7 +551,7 @@ def combat_resolution_page(characters):
         # Show selected target info
         if target_name:
             selected_char = characters[target_name]
-            st.info(f"🎯 **Selected Target:** {target_name} | Vigor: {selected_char.vigor}/{selected_char.max_vigor} | Guard: {selected_char.guard}/{selected_char.max_guard} | Armor: {selected_char.armor}")
+            st.info(f"🎯 **Selected Target:** {target_name} | VIG: {selected_char.vigor}/{selected_char.max_vigor} | GRD: {selected_char.guard}/{selected_char.max_guard} | ARM: {selected_char.armor}")
         
         # Combat action buttons
         col_damage, col_impaired, col_fatigued = st.columns([2, 1, 1])
@@ -532,7 +622,7 @@ def combat_resolution_page(characters):
     with col2:
         sort_by = st.selectbox(
             "Sort by:",
-            ["Name", "Vigor", "Guard"]
+            ["Name", "VIG", "GRD"]
         )
     
     # Filter characters based on status
@@ -561,9 +651,9 @@ def combat_resolution_page(characters):
         # Sort characters
         if sort_by == "Name":
             sorted_chars = dict(sorted(filtered_chars.items()))
-        elif sort_by == "Vigor":
+        elif sort_by == "VIG":
             sorted_chars = dict(sorted(filtered_chars.items(), key=lambda x: x[1].vigor, reverse=True))
-        elif sort_by == "Guard":
+        elif sort_by == "GRD":
             sorted_chars = dict(sorted(filtered_chars.items(), key=lambda x: x[1].guard, reverse=True))
         
         if view_mode == "Cards":
@@ -604,15 +694,15 @@ def combat_resolution_page(characters):
                             vigor_pct = (character.vigor / character.max_vigor) * 100 if character.max_vigor > 0 else 0
                             guard_pct = (character.guard / character.max_guard) * 100 if character.max_guard > 0 else 0
                             
-                            st.progress(vigor_pct / 100, text=f"Vigor: {character.vigor}/{character.max_vigor}")
-                            st.progress(guard_pct / 100, text=f"Guard: {character.guard}/{character.max_guard}")
+                            st.progress(vigor_pct / 100, text=f"VIG: {character.vigor}/{character.max_vigor}")
+                            st.progress(guard_pct / 100, text=f"GRD: {character.guard}/{character.max_guard}")
                             
                             col_a, col_b = st.columns(2)
                             with col_a:
-                                st.metric("Clarity", f"{character.clarity}/{character.max_clarity}")
-                                st.metric("Armor", character.armor)
+                                st.metric("CLA", f"{character.clarity}/{character.max_clarity}")
+                                st.metric("ARM", character.armor)
                             with col_b:
-                                st.metric("Spirit", f"{character.spirit}/{character.max_spirit}")
+                                st.metric("SPI", f"{character.spirit}/{character.max_spirit}")
                                 if character.is_mortally_wounded:
                                     st.error("⚠️ Mortally Wounded")
                             
@@ -656,15 +746,15 @@ def combat_resolution_page(characters):
             with header_col2:
                 st.write("**Status**")
             with header_col3:
-                st.write("**Vigor**")
+                st.write("**VIG**")
             with header_col4:
-                st.write("**Guard**")
+                st.write("**GRD**")
             with header_col5:
-                st.write("**Clarity**")
+                st.write("**CLA**")
             with header_col6:
-                st.write("**Spirit**")
+                st.write("**SPI**")
             with header_col7:
-                st.write("**Armor**")
+                st.write("**ARM**")
             with header_col8:
                 st.write("**Conditions**")
             with header_col9:
@@ -771,6 +861,183 @@ def combat_resolution_page(characters):
         if dead_count > 0:
             st.error(f"💀 {dead_count} character(s) have been slain")
 
+def data_management_page(characters):
+    """Data management page for CSV export/import."""
+    st.header("Data Management")
+    st.markdown("Export your character data to CSV for backup, or import characters from a CSV file.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📤 Export Characters")
+        
+        if characters:
+            st.markdown(f"**{len(characters)} character(s) ready for export**")
+            
+            # Show preview of what will be exported
+            with st.expander("Preview Export Data"):
+                preview_data = []
+                for name, char in characters.items():
+                    preview_data.append({
+                        "Name": name,
+                        "VIG": f"{char.vigor}/{char.max_vigor}",
+                        "GRD": f"{char.guard}/{char.max_guard}",
+                        "Status": "Dead" if not char.is_alive else "Alive",
+                        "Conditions": ", ".join([
+                            c for c in [
+                                "Wounded" if char.is_wounded else "",
+                                "Mortally Wounded" if char.is_mortally_wounded else "",
+                                "Impaired" if char.is_impaired else "",
+                                "Fatigued" if char.is_fatigued else "",
+                                "Scarred" if char.is_scarred else ""
+                            ] if c
+                        ]) or "None"
+                    })
+                
+                st.dataframe(preview_data, use_container_width=True, hide_index=True)
+            
+            # Export button
+            csv_data = export_characters_to_csv(characters)
+            if csv_data:
+                st.download_button(
+                    label="💾 Download Characters CSV",
+                    data=csv_data,
+                    file_name="mythic_bastionland_characters.csv",
+                    mime="text/csv",
+                    type="primary",
+                    use_container_width=True
+                )
+            
+            st.info("💡 **Tip:** The CSV includes all character data including profile images (encoded as base64).")
+        
+        else:
+            st.warning("No characters to export. Create some characters first!")
+    
+    with col2:
+        st.subheader("📥 Import Characters")
+        
+        st.markdown("**Upload a CSV file to import characters:**")
+        uploaded_csv = st.file_uploader(
+            "Choose CSV file",
+            type=['csv'],
+            help="Upload a CSV file exported from this app or created manually"
+        )
+        
+        if uploaded_csv is not None:
+            try:
+                # Read the CSV content
+                csv_content = uploaded_csv.read().decode('utf-8')
+                
+                # Preview the data
+                st.markdown("**Preview of CSV data:**")
+                preview_df = pd.read_csv(io.StringIO(csv_content))
+                # Rename columns for display
+                display_df = preview_df[['name', 'vigor', 'max_vigor', 'guard', 'max_guard', 'armor']].head().copy()
+                display_df.columns = ['Name', 'VIG', 'Max VIG', 'GRD', 'Max GRD', 'ARM']
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Import options
+                import_mode = st.radio(
+                    "Import Mode:",
+                    ["Add to existing characters", "Replace all characters"],
+                    help="Choose whether to add these characters to your current roster or replace everything"
+                )
+                
+                # Import button
+                if st.button("📥 Import Characters", type="primary", use_container_width=True):
+                    imported_characters = import_characters_from_csv(csv_content)
+                    
+                    if imported_characters:
+                        if import_mode == "Replace all characters":
+                            # Clear existing characters
+                            st.session_state.characters = {}
+                        
+                        # Add imported characters
+                        conflicts = []
+                        imported_count = 0
+                        
+                        for name, character in imported_characters.items():
+                            if name in st.session_state.get('characters', {}):
+                                conflicts.append(name)
+                            else:
+                                save_character(character)
+                                imported_count += 1
+                        
+                        # Show results
+                        if imported_count > 0:
+                            st.success(f"✅ Successfully imported {imported_count} character(s)!")
+                        
+                        if conflicts and import_mode == "Add to existing characters":
+                            st.warning(f"⚠️ Skipped {len(conflicts)} character(s) with duplicate names: {', '.join(conflicts)}")
+                        
+                        if imported_count > 0:
+                            st.rerun()
+                    else:
+                        st.error("Failed to import characters. Please check your CSV format.")
+            
+            except Exception as e:
+                st.error(f"Error reading CSV file: {str(e)}")
+        
+        # CSV format help
+        with st.expander("📋 CSV Format Help"):
+            st.markdown("""
+            **Required CSV columns:**
+            - `name`: Character name
+            - `vigor`, `max_vigor`: Current and maximum Vigor
+            - `clarity`, `max_clarity`: Current and maximum Clarity  
+            - `spirit`, `max_spirit`: Current and maximum Spirit
+            - `guard`, `max_guard`: Current and maximum GRD
+            - `armor`: ARM value
+            - `is_alive`: true/false
+            - `is_wounded`, `is_mortally_wounded`, `is_impaired`, `is_fatigued`, `is_scarred`: true/false for conditions
+            
+            **Optional columns:**
+            - `notes`: Character notes
+            - `profile_image_base64`: Base64 encoded image data
+            
+            **Example CSV:**
+            ```
+            name,vigor,max_vigor,clarity,max_clarity,spirit,max_spirit,guard,max_guard,armor,is_alive,is_wounded,is_mortally_wounded,is_impaired,is_fatigued,is_scarred,notes
+            Gareth,8,10,10,10,10,10,3,5,2,true,true,false,false,false,false,"Brave knight with enchanted sword"
+            ```
+            """)
+    
+    # Bulk operations
+    st.subheader("🔧 Bulk Operations")
+    
+    if characters:
+        bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
+        
+        with bulk_col1:
+            if st.button("🏥 Heal All Characters", use_container_width=True):
+                for character in characters.values():
+                    character.reset_to_full()
+                    save_character(character)
+                st.success(f"All {len(characters)} characters fully healed!")
+                st.rerun()
+        
+        with bulk_col2:
+            if st.button("💀 Mark All Dead", use_container_width=True):
+                for character in characters.values():
+                    character.is_alive = False
+                    character.vigor = 0
+                    save_character(character)
+                st.success(f"All {len(characters)} characters marked as dead!")
+                st.rerun()
+        
+        with bulk_col3:
+            if st.button("🗑️ Delete All Characters", use_container_width=True):
+                if st.session_state.get('confirm_delete_all', False):
+                    st.session_state.characters = {}
+                    st.session_state.confirm_delete_all = False
+                    st.success("All characters deleted!")
+                    st.rerun()
+                else:
+                    st.session_state.confirm_delete_all = True
+                    st.warning("Click again to confirm deletion of ALL characters!")
+    else:
+        st.info("No characters available for bulk operations.")
+
 def main():
     st.set_page_config(
         page_title="Mythic Bastionland Combat Tracker",
@@ -781,21 +1048,22 @@ def main():
     st.title("⚔️ Mythic Bastionland Combat Tracker")
     st.markdown("Track character stats and resolve combat damage automatically")
     
-    # Sidebar for navigation
-    st.sidebar.title("Navigation")
-    page = st.sidebar.selectbox(
-        "Choose a page:",
-        ["Combat Resolution", "Character Management", "Character Creation"]
-    )
+    # Tab navigation
+    tab1, tab2, tab3, tab4 = st.tabs(["⚔️ Combat Resolution", "👥 Character Management", "➕ Character Creation", "💾 Data Management"])
     
     characters = load_characters()
     
-    if page == "Character Creation":
-        character_creation_page(characters)
-    elif page == "Character Management":
-        character_management_page(characters)
-    elif page == "Combat Resolution":
+    with tab1:
         combat_resolution_page(characters)
+    
+    with tab2:
+        character_management_page(characters)
+    
+    with tab3:
+        character_creation_page(characters)
+    
+    with tab4:
+        data_management_page(characters)
 
 if __name__ == "__main__":
     main()
